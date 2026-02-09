@@ -1,0 +1,7 @@
+[package]
+name = "mac_net_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.24.1", default-features = false, features = ["glow"] }
