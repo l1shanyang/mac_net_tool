@@ -32,6 +32,15 @@ impl App {
     }
 
     fn init(&mut self) {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
+            let app = NSApp();
+            app.setActivationPolicy_(
+                NSApplicationActivationPolicy::NSApplicationActivationPolicyProhibited,
+            );
+        }
+
         let toggle_item = MenuItem::new("Apply", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
 

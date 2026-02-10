@@ -32,6 +32,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<EOF
   <key>CFBundleExecutable</key><string>${APP_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
+  <key>LSBackgroundOnly</key><true/>
 </dict>
 </plist>
 EOF
