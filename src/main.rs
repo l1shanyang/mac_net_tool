@@ -1,12 +1,14 @@
 use std::process::{Command, ExitStatus};
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::event::Event;
 use winit::event_loop::EventLoopBuilder;
 
 const SERVICE: &str = "Wi-Fi";
-const IP: &str = "192.168.50.163";
+const IP_BASE: &str = "192.168.50";
 const MASK: &str = "255.255.255.0";
 const ROUTER: &str = "192.168.50.222";
 
@@ -17,6 +19,7 @@ struct App {
     quit_item: Option<MenuItem>,
     applied: bool,
     status: String,
+    current_ip: Option<String>,
 }
 
 impl App {
@@ -28,20 +31,19 @@ impl App {
             quit_item: None,
             applied: false,
             status: "Ready.".to_string(),
+            current_ip: None,
         }
     }
 
     fn init(&mut self) {
-        if let Ok(is_dhcp) = detect_dhcp() {
-            self.applied = !is_dhcp;
-            self.status = if is_dhcp {
-                "DHCP".to_string()
-            } else {
-                "PROXY".to_string()
-            };
+        if let Ok(info) = detect_network_state() {
+            self.applied = !info.is_dhcp;
+            self.status = if info.is_dhcp { "DHCP" } else { "PROXY" }.to_string();
+            self.current_ip = info.ip;
         } else {
             self.applied = false;
             self.status = "Unknown".to_string();
+            self.current_ip = None;
         }
 
         #[cfg(target_os = "macos")]
@@ -75,6 +77,7 @@ impl App {
         self.menu = Some(menu);
         self.toggle_item = Some(toggle_item);
         self.quit_item = Some(quit_item);
+        self.update_tray();
     }
 
     fn on_tray_event(&mut self, event: TrayIconEvent) {
@@ -109,13 +112,18 @@ impl App {
         let result = if self.applied {
             stop_config()
         } else {
-            apply_config()
+            apply_config().map(|ip| {
+                self.current_ip = Some(ip);
+            })
         };
 
         match result {
             Ok(()) => {
                 self.applied = !self.applied;
                 self.status = if self.applied { "PROXY".to_string() } else { "DHCP".to_string() };
+                if !self.applied {
+                    self.current_ip = None;
+                }
                 self.update_tray();
                 Ok(())
             }
@@ -131,7 +139,12 @@ impl App {
         if let Some(tray) = &self.tray {
             let _ = tray.set_icon(Some(make_icon(self.applied)));
             tray.set_title(Some(if self.applied { "PROXY" } else { "DHCP" }));
-            let _ = tray.set_tooltip(Some(&self.status));
+            let tip = if let Some(ip) = &self.current_ip {
+                format!("{} ({ip})", self.status)
+            } else {
+                self.status.clone()
+            };
+            let _ = tray.set_tooltip(Some(&tip));
         }
         if let Some(item) = &self.toggle_item {
             item.set_text(if self.applied { "Stop" } else { "Apply" });
@@ -160,7 +173,12 @@ fn run_cmd(cmd: &mut Command) -> Result<ExitStatus, String> {
     Ok(status)
 }
 
-fn detect_dhcp() -> Result<bool, String> {
+struct NetworkInfo {
+    is_dhcp: bool,
+    ip: Option<String>,
+}
+
+fn detect_network_state() -> Result<NetworkInfo, String> {
     let output = Command::new("networksetup")
         .arg("-getinfo")
         .arg(SERVICE)
@@ -170,19 +188,30 @@ fn detect_dhcp() -> Result<bool, String> {
         return Err(format!("command exited with status {}", output.status));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.contains("DHCP Configuration") || stdout.contains("dhcp"))
+    let is_dhcp = stdout.contains("DHCP Configuration") || stdout.contains("dhcp");
+    let mut ip = None;
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("IP address:") {
+            let val = rest.trim();
+            if !val.is_empty() {
+                ip = Some(val.to_string());
+            }
+        }
+    }
+    Ok(NetworkInfo { is_dhcp, ip })
 }
 
-fn apply_config() -> Result<(), String> {
+fn apply_config() -> Result<String, String> {
+    let ip = choose_free_ip()?;
     let mut cmd = Command::new("networksetup");
     cmd.arg("-setmanual")
         .arg(SERVICE)
-        .arg(IP)
+        .arg(&ip)
         .arg(MASK)
         .arg(ROUTER);
     let status = run_cmd(&mut cmd)?;
     if status.success() {
-        Ok(())
+        Ok(ip)
     } else {
         Err(format!("command exited with status {status}"))
     }
@@ -197,6 +226,40 @@ fn stop_config() -> Result<(), String> {
     } else {
         Err(format!("command exited with status {status}"))
     }
+}
+
+fn choose_free_ip() -> Result<String, String> {
+    let router_last = ROUTER
+        .split('.')
+        .last()
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or(222);
+
+    let mut candidates: Vec<u8> = (2..=254)
+        .filter(|&n| n != router_last && n != 1)
+        .collect();
+    candidates.shuffle(&mut thread_rng());
+
+    for last in candidates.into_iter().take(100) {
+        let ip = format!("{IP_BASE}.{last}");
+        if !ip_in_use(&ip)? {
+            return Ok(ip);
+        }
+    }
+
+    Err("no available IP found in subnet".to_string())
+}
+
+fn ip_in_use(ip: &str) -> Result<bool, String> {
+    let status = Command::new("ping")
+        .arg("-c")
+        .arg("1")
+        .arg("-W")
+        .arg("1000")
+        .arg(ip)
+        .status()
+        .map_err(|e| format!("failed to run ping: {e}"))?;
+    Ok(status.success())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
