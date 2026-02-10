@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
 use rand::seq::SliceRandom;
@@ -202,7 +204,10 @@ fn detect_network_state() -> Result<NetworkInfo, String> {
 }
 
 fn apply_config() -> Result<String, String> {
-    let ip = choose_free_ip()?;
+    let ip = match load_last_ip()? {
+        Some(ip) if ip.starts_with(&format!("{IP_BASE}.")) && !ip_in_use(&ip)? => ip,
+        _ => choose_free_ip()?,
+    };
     let mut cmd = Command::new("networksetup");
     cmd.arg("-setmanual")
         .arg(SERVICE)
@@ -211,6 +216,7 @@ fn apply_config() -> Result<String, String> {
         .arg(ROUTER);
     let status = run_cmd(&mut cmd)?;
     if status.success() {
+        let _ = save_last_ip(&ip);
         Ok(ip)
     } else {
         Err(format!("command exited with status {status}"))
@@ -260,6 +266,38 @@ fn ip_in_use(ip: &str) -> Result<bool, String> {
         .status()
         .map_err(|e| format!("failed to run ping: {e}"))?;
     Ok(status.success())
+}
+
+fn state_file_path() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("failed to read HOME: {e}"))?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("MacNetConfig")
+        .join("last_ip.txt"))
+}
+
+fn load_last_ip() -> Result<Option<String>, String> {
+    let path = state_file_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path).map_err(|e| format!("read last_ip: {e}"))?;
+    let ip = content.trim().to_string();
+    if ip.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ip))
+    }
+}
+
+fn save_last_ip(ip: &str) -> Result<(), String> {
+    let path = state_file_path()?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("create state dir: {e}"))?;
+    }
+    fs::write(path, ip).map_err(|e| format!("write last_ip: {e}"))?;
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
