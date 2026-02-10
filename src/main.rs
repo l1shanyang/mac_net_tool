@@ -32,6 +32,18 @@ impl App {
     }
 
     fn init(&mut self) {
+        if let Ok(is_dhcp) = detect_dhcp() {
+            self.applied = !is_dhcp;
+            self.status = if is_dhcp {
+                "DHCP".to_string()
+            } else {
+                "PROXY".to_string()
+            };
+        } else {
+            self.applied = false;
+            self.status = "Unknown".to_string();
+        }
+
         #[cfg(target_os = "macos")]
         unsafe {
             use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
@@ -53,7 +65,7 @@ impl App {
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
             .with_tooltip("macOS Network Config")
-            .with_title(if self.applied { "ON" } else { "OFF" })
+            .with_title(if self.applied { "PROXY" } else { "DHCP" })
             .with_menu(Box::new(menu.clone()))
             .with_menu_on_left_click(false)
             .build()
@@ -103,11 +115,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.applied = !self.applied;
-                self.status = if self.applied {
-                    "Applied manual IPv4 config.".to_string()
-                } else {
-                    "Switched to DHCP.".to_string()
-                };
+                self.status = if self.applied { "PROXY".to_string() } else { "DHCP".to_string() };
                 self.update_tray();
                 Ok(())
             }
@@ -122,7 +130,7 @@ impl App {
     fn update_tray(&mut self) {
         if let Some(tray) = &self.tray {
             let _ = tray.set_icon(Some(make_icon(self.applied)));
-            tray.set_title(Some(if self.applied { "ON" } else { "OFF" }));
+            tray.set_title(Some(if self.applied { "PROXY" } else { "DHCP" }));
             let _ = tray.set_tooltip(Some(&self.status));
         }
         if let Some(item) = &self.toggle_item {
@@ -150,6 +158,19 @@ fn run_cmd(cmd: &mut Command) -> Result<ExitStatus, String> {
         .status()
         .map_err(|e| format!("failed to run command: {e}"))?;
     Ok(status)
+}
+
+fn detect_dhcp() -> Result<bool, String> {
+    let output = Command::new("networksetup")
+        .arg("-getinfo")
+        .arg(SERVICE)
+        .output()
+        .map_err(|e| format!("failed to run command: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("command exited with status {}", output.status));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.contains("DHCP Configuration") || stdout.contains("dhcp"))
 }
 
 fn apply_config() -> Result<(), String> {
