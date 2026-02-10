@@ -53,12 +53,11 @@ impl App {
         let _ = menu.append(&toggle_item);
         let _ = menu.append(&quit_item);
 
-        let icon = make_icon(self.applied);
+        let icon = load_icon(self.applied);
 
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
             .with_tooltip("macOS Network Config")
-            .with_title(if self.applied { "PROXY" } else { "DHCP" })
             .with_menu(Box::new(menu.clone()))
             .with_menu_on_left_click(false)
             .build()
@@ -127,8 +126,7 @@ impl App {
 
     fn update_tray(&mut self) {
         if let Some(tray) = &self.tray {
-            let _ = tray.set_icon(Some(make_icon(self.applied)));
-            tray.set_title(Some(if self.applied { "PROXY" } else { "DHCP" }));
+            let _ = tray.set_icon(Some(load_icon(self.applied)));
             let tip = if let Some(ip) = &self.current_ip {
                 format!("{} ({ip})", self.status)
             } else {
@@ -142,16 +140,24 @@ impl App {
     }
 }
 
-fn make_icon(applied: bool) -> Icon {
-    let size = 18u32;
-    let color = if applied {
-        [46, 204, 113, 255]
-    } else {
-        [149, 165, 166, 255]
-    };
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for _ in 0..(size * size) {
-        rgba.extend_from_slice(&color);
+fn load_icon(applied: bool) -> Icon {
+    let bytes = include_bytes!("assets/logo.png");
+    let img = image::load_from_memory(bytes).expect("load icon");
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut data = rgba.into_raw();
+
+    if !applied {
+        for px in data.chunks_exact_mut(4) {
+            let r = px[0] as f32;
+            let g = px[1] as f32;
+            let b = px[2] as f32;
+            let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+            px[0] = gray;
+            px[1] = gray;
+            px[2] = gray;
+        }
     }
-    Icon::from_rgba(rgba, size, size).expect("icon")
+
+    Icon::from_rgba(data, width, height).expect("icon")
 }
